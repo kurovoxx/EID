@@ -1,97 +1,70 @@
 import numpy as np
 
-def run_simulation(x0, y0, xg, yg, f_grad_x, f_grad_y, alpha, max_iter, tol, obstacles):
-    """
-    Simula la trayectoria del robot usando descenso de gradiente.
-    
-    Returns:
-        history: Lista de posiciones (x, y).
-        status: Diccionario con tipo de estado, mensaje descriptivo y métricas finales.
-    """
-    history = [(x0, y0)]
-    grads = [] # Lista de (gx, gy)
-    norms = [] # Lista de ||grad||
-    
-    curr_x, curr_y = x0, y0
-    
-    # Inicialización del resultado con valores por defecto
-    result = {
-        "type": "running", 
-        "message": "Simulando...", 
-        "final_grad": (0.0, 0.0), 
-        "grad_norm": 0.0
-    }
-    
-    for i in range(max_iter):
-        try:
-            # Intentar calcular gradiente
-            gx_raw = f_grad_x(curr_x, curr_y)
-            gy_raw = f_grad_y(curr_x, curr_y)
-            
-            gx = float(gx_raw)
-            gy = float(gy_raw)
-            grad_norm = np.sqrt(gx**2 + gy**2)
-            
-            grads.append((gx, gy))
-            norms.append(grad_norm)
-            
-            # Actualizar métricas finales en tiempo real
-            result["final_grad"] = (gx, gy)
-            result["grad_norm"] = grad_norm
-            
-            dist_to_goal = np.sqrt((curr_x - xg)**2 + (curr_y - yg)**2)
+# aca esta la simulacion, donde el robot se va moviendo de a poco
+# la idea es ir restando alpha*gradiente en cada paso (eso es basicamente
+# descenso de gradiente, como cuando se busca el minimo de una funcion)
 
-            # 1. Verificar estabilidad numérica (NaN/Inf)
-            if not np.isfinite(gx) or not np.isfinite(gy):
-                result.update({
-                    "type": "error",
-                    "message": "⚠️ Error numérico: El gradiente ha explotado (posible colisión directa)."
-                })
-                break
 
-            # 2. Condición de éxito
-            if dist_to_goal < tol:
-                result.update({
-                    "type": "success",
-                    "message": f"✅ ¡Objetivo alcanzado en {i} iteraciones!"
-                })
-                break
+def simular_trayectoria(x0, y0, xg, yg, fdx, fdy, alpha, max_iter, tol):
+    # esta funcion mueve al robot paso a paso y guarda por donde fue pasando
+    # para poder graficar la trayectoria despues en streamlit
 
-            # 3. Detección de Mínimo Local
-            if grad_norm < 1e-3 and dist_to_goal > tol * 2:
-                result.update({
-                    "type": "local_minimum",
-                    "message": f"🛑 Atrapado en un mínimo local. El gradiente es casi nulo."
-                })
-                break
-            
-            # 4. Actualización de posición
-            next_x = curr_x - alpha * gx
-            next_y = curr_y - alpha * gy
-            
-            # 5. Detección de estancamiento
-            step_size = np.sqrt((next_x - curr_x)**2 + (next_y - curr_y)**2)
-            if step_size < 1e-7 and dist_to_goal > tol:
-                 result.update({
-                    "type": "stuck",
-                    "message": "⚠️ El robot se ha detenido por falta de fuerza en el campo."
-                })
-                 break
+    trayectoria = [(x0, y0)]
+    gradientes = []
 
-            history.append((next_x, next_y))
-            curr_x, curr_y = next_x, next_y
-            
-        except Exception as e:
-            result.update({
-                "type": "error",
-                "message": f"❌ Error durante el cálculo: {str(e)}"
-            })
+    x_act = x0
+    y_act = y0
+
+    mensaje = ""
+    estado = ""
+
+    llego = False
+
+    for i in range(int(max_iter)):
+
+        gx = float(fdx(x_act, y_act))
+        gy = float(fdy(x_act, y_act))
+        gradientes.append((gx, gy))
+
+        # si el robot se acerca mucho a un obstaculo el gradiente se va a infinito
+        # (porque dividimos por d^2 y d se hace casi 0), entonces hay que chequear
+        # esto si no el programa explota con nan en todos lados
+        if not np.isfinite(gx) or not np.isfinite(gy):
+            mensaje = "El robot se acerco demasiado a un obstaculo (iteracion " + str(i) + "), el potencial se va a infinito ahi y no se puede seguir."
+            estado = "colision"
             break
-            
-    else:
-        result.update({
-            "type": "max_iter",
-            "message": f"⏳ Se alcanzó el máximo de {max_iter} iteraciones."
-        })
-        
-    return np.array(history), result, np.array(grads), np.array(norms)
+
+        dist_meta = np.sqrt((x_act - xg)**2 + (y_act - yg)**2)
+
+        if dist_meta < tol:
+            mensaje = "Llego a la meta en " + str(i) + " iteraciones."
+            estado = "exito"
+            llego = True
+            break
+
+        norma_grad = np.sqrt(gx**2 + gy**2)
+
+        # si el gradiente es casi cero pero todavia estamos lejos de la meta
+        # significa que quedamos atrapados en un minimo local, esto pasa cuando
+        # un obstaculo esta justo en el camino hacia la meta (lo vimos varias veces
+        # probando con distintas posiciones)
+        if norma_grad < 1e-3 and dist_meta > tol * 3:
+            mensaje = "El robot quedo atrapado en un minimo local (iteracion " + str(i) + "), el gradiente es casi 0 pero no llegamos a la meta."
+            estado = "minimo_local"
+            break
+
+        # actualizacion de posicion, formula del descenso de gradiente
+        x_sig = x_act - alpha * gx
+        y_sig = y_act - alpha * gy
+
+        trayectoria.append((x_sig, y_sig))
+        x_act = x_sig
+        y_act = y_sig
+
+    if not llego and estado == "":
+        # si no entro a ninguno de los if de arriba es porque se acabaron
+        # las iteraciones sin pasar nada de lo anterior
+        mensaje = "Se llegaron a las " + str(max_iter) + " iteraciones maximas sin llegar a la meta."
+        estado = "max_iter"
+
+    return np.array(trayectoria), np.array(gradientes), estado, mensaje
